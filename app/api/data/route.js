@@ -13,7 +13,7 @@ export async function GET() {
     if (sErr) return Response.json({ error: sErr.message }, { status: 500 })
 
     // Helper to get a state value safely
-    const getState = (key: string, fallback: any) => {
+    const getState = (key, fallback) => {
       const row = stateRows?.find(r => r.key === key)
       return row ? row.value : fallback
     }
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
 
     if (e && e.length > 0) {
       const { error: insErr } = await supabase.from('portions').insert(
-        e.map(([ts, p, mg, cost]: number[]) => ({ ts, p, mg, cost }))
+        e.map(([ts, p, mg, cost]) => ({ ts, p, mg, cost }))
       )
       if (insErr) return Response.json({ error: insErr.message }, { status: 500 })
     }
