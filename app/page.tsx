@@ -1,5 +1,12 @@
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { createClient } from '@supabase/supabase-js';
+
+// ── SUPABASE CLIENT (client-side for realtime) ────────────
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 // ── TYPES ─────────────────────────────────────────────────
 type Entry = [number, number, number, number]; // [ts, portions, mg, cost]
@@ -56,7 +63,7 @@ function lastTakenText(entries: Entry[]) {
   return `Last snus: ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
 }
 
-// ── MINI BAR CHART (no deps) ──────────────────────────────
+// ── MINI BAR CHART ────────────────────────────────────────
 function BarChart({ buckets }: { buckets: Record<string, number> }) {
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() - (6 - i));
@@ -71,12 +78,7 @@ function BarChart({ buckets }: { buckets: Record<string, number> }) {
         const isToday = d.key === todayK();
         return (
           <div key={d.key} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-            <div style={{
-              width: '100%', height: h, borderRadius: 4,
-              background: isToday ? 'var(--good)' : vals[i] > 0 ? 'var(--ink)' : 'var(--border)',
-              opacity: isToday ? 1 : 0.5,
-              transition: 'height 0.4s ease'
-            }} />
+            <div style={{ width: '100%', height: h, borderRadius: 4, background: isToday ? 'var(--good)' : vals[i] > 0 ? 'var(--ink)' : 'var(--border)', opacity: isToday ? 1 : 0.5, transition: 'height 0.4s ease' }} />
             <span style={{ fontSize: 9, color: 'var(--dim)', fontWeight: isToday ? 700 : 400 }}>{d.label}</span>
           </div>
         );
@@ -88,15 +90,33 @@ function BarChart({ buckets }: { buckets: Record<string, number> }) {
 // ── TOAST HOOK ────────────────────────────────────────────
 function useToast() {
   const [toast, setToast] = useState<{ msg: string; id: number } | null>(null);
-  const show = useCallback((msg: string) => {
-    setToast({ msg, id: Date.now() });
-  }, []);
+  const show = useCallback((msg: string) => setToast({ msg, id: Date.now() }), []);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 2000);
     return () => clearTimeout(t);
   }, [toast]);
   return { toast, show };
+}
+
+// ── KEEPALIVE: prevents Supabase free tier pause ──────────
+// Runs a lightweight query every 6 days to keep the project active
+function useKeepalive() {
+  useEffect(() => {
+    const SIX_DAYS = 6 * 24 * 60 * 60 * 1000;
+    const STORAGE_KEY = 'snus_last_ping';
+    async function ping() {
+      const last = parseInt(localStorage.getItem(STORAGE_KEY) || '0');
+      if (Date.now() - last < SIX_DAYS) return;
+      try {
+        await supabase.from('state').select('key').limit(1);
+        localStorage.setItem(STORAGE_KEY, String(Date.now()));
+      } catch (_) {}
+    }
+    ping();
+    const interval = setInterval(ping, 60 * 60 * 1000); // check every hour
+    return () => clearInterval(interval);
+  }, []);
 }
 
 // ── MAIN APP ──────────────────────────────────────────────
@@ -111,8 +131,9 @@ export default function App() {
   const [resetConfirm, setResetConfirm] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { toast, show: showToast } = useToast();
+  useKeepalive();
 
-  // Load data on mount
+  // ── LOAD DATA ─────────────────────────────────────────
   const loadData = useCallback(async () => {
     try {
       const res = await fetch('/api/data');
@@ -128,12 +149,24 @@ export default function App() {
 
   useEffect(() => {
     loadData().finally(() => setLoading(false));
-    // Auto-refresh every 60s for watch sync
-    const interval = setInterval(loadData, 60000);
-    return () => clearInterval(interval);
   }, [loadData]);
 
-  // Debounced save — waits 800ms after last change then saves
+  // ── REALTIME: instant sync when DB changes ─────────────
+  useEffect(() => {
+    const channel = supabase
+      .channel('db-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'portions' }, () => {
+        loadData(); // re-fetch whenever portions table changes
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'state' }, () => {
+        loadData();
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [loadData]);
+
+  // ── SAVE DATA (debounced 800ms) ───────────────────────
   const saveData = useCallback((newState: AppState) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
@@ -147,7 +180,6 @@ export default function App() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       } catch (err) {
         showToast('Sync failed — try again');
-        console.error('Save error:', err);
       } finally {
         setSyncing(false);
       }
@@ -162,14 +194,10 @@ export default function App() {
     });
   }, [saveData]);
 
-  // ── ACTIONS ──────────────────────────────────────────────
+  // ── ACTIONS ───────────────────────────────────────────
   function addEntry(p: number) {
     const cost = p * cpp(state.cfg);
-    updateState(s => ({
-      ...s,
-      e: [...s.e, [Date.now(), p, p * s.cfg.mg, cost]],
-      la: p
-    }));
+    updateState(s => ({ ...s, e: [...s.e, [Date.now(), p, p * s.cfg.mg, cost]], la: p }));
     if (navigator.vibrate) navigator.vibrate(30);
     showToast(`+${p} portion${p > 1 ? 's' : ''}`);
   }
@@ -206,7 +234,7 @@ export default function App() {
     showToast('All data cleared');
   }
 
-  // ── COMPUTED ─────────────────────────────────────────────
+  // ── COMPUTED ──────────────────────────────────────────
   const s = computeStats(state);
   const avgP7 = s.wp / 7;
   const level = getLevel(s.tp, avgP7);
@@ -219,9 +247,7 @@ export default function App() {
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontFamily: 'var(--display)', fontSize: 28, fontWeight: 900, fontStyle: 'italic', marginBottom: 16 }}>snus tracker</div>
         <div style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
-          {[0, 1, 2].map(i => (
-            <div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--dim)', animation: `bounce 0.8s ease ${i * 0.15}s infinite` }} />
-          ))}
+          {[0, 1, 2].map(i => <div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--dim)', animation: `bounce 0.8s ease ${i * 0.15}s infinite` }} />)}
         </div>
       </div>
     </div>
@@ -375,8 +401,9 @@ export default function App() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(45,37,32,.35)', backdropFilter: 'blur(4px)', display: 'grid', placeItems: 'center', zIndex: 9000 }} onClick={() => setShowAdd(false)}>
           <div className="card" style={{ width: 'min(92vw,340px)', animation: 'slideIn 0.2s ease' }} onClick={e => e.stopPropagation()}>
             <div style={{ fontFamily: 'var(--display)', fontSize: 20, fontWeight: 700, fontStyle: 'italic', marginBottom: 16 }}>Add portions</div>
-            <label className="field-label">How many portions?</label>
-            <input className="field-input" type="number" min="1" placeholder="e.g. 6" inputMode="numeric" value={addVal} onChange={e => setAddVal(e.target.value)}
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 6 }}>How many portions?</label>
+            <input className="field-input" type="number" min="1" placeholder="e.g. 6" inputMode="numeric" value={addVal}
+              onChange={e => setAddVal(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') { const v = Number(addVal); if (v > 0) { addEntry(v); setShowAdd(false); } } }}
               autoFocus />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -399,7 +426,7 @@ export default function App() {
               { label: 'Boxes left', key: 'boxes' }
             ].map(({ label, key }) => (
               <div key={key}>
-                <label className="field-label">{label}</label>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 6 }}>{label}</label>
                 <input className="field-input" type="number" min="0" inputMode="numeric"
                   value={settingsForm[key as keyof typeof settingsForm]}
                   onChange={e => setSettingsForm(f => ({ ...f, [key]: e.target.value }))} />

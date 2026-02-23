@@ -1,41 +1,62 @@
+export const dynamic = 'force-dynamic'
+
 import { supabase } from '@/lib/supabase'
 
 export async function GET() {
-  const [{ data: portions }, { data: state }] = await Promise.all([
-    supabase.from('portions').select('*').order('ts', { ascending: true }),
-    supabase.from('state').select('*')
-  ])
+  try {
+    const [{ data: portions, error: pErr }, { data: stateRows, error: sErr }] = await Promise.all([
+      supabase.from('portions').select('*').order('ts', { ascending: true }),
+      supabase.from('state').select('*')
+    ])
 
-  const cfg = state?.find(r => r.key === 'cfg')?.value || { mg: 10, p10: 269, ppb: 20 }
-  const boxes = state?.find(r => r.key === 'boxes')?.value || 10
-  const boxes_used = state?.find(r => r.key === 'boxes_used')?.value || 0
-  const last_action = state?.find(r => r.key === 'last_action')?.value || null
+    if (pErr) return Response.json({ error: pErr.message }, { status: 500 })
+    if (sErr) return Response.json({ error: sErr.message }, { status: 500 })
 
-  return Response.json({
-    e: portions?.map(p => [p.ts, p.p, p.mg, p.cost]) || [],
-    b: boxes, bu: boxes_used, la: last_action, cfg
-  })
+    // Helper to get a state value safely
+    const getState = (key, fallback) => {
+      const row = stateRows?.find(r => r.key === key)
+      return row ? row.value : fallback
+    }
+
+    return Response.json({
+      e: (portions || []).map(p => [p.ts, p.p, p.mg, p.cost]),
+      b:  Number(getState('boxes', 10)),
+      bu: Number(getState('boxes_used', 0)),
+      la: getState('last_action', null),
+      cfg: getState('cfg', { mg: 10, p10: 269, ppb: 20 })
+    })
+  } catch (e) {
+    return Response.json({ error: e.message }, { status: 500 })
+  }
 }
 
 export async function POST(request) {
-  const body = await request.json()
-  const { e, b, bu, la, cfg } = body
+  try {
+    const { e, b, bu, la, cfg } = await request.json()
 
-  await Promise.all([
-    supabase.from('portions').delete().neq('id', 0),
-    supabase.from('state').upsert([
-      { key: 'boxes', value: b },
-      { key: 'boxes_used', value: bu },
-      { key: 'last_action', value: la },
-      { key: 'cfg', value: cfg }
-    ])
-  ])
+    // Delete all portions and reinsert
+    const { error: delErr } = await supabase.from('portions').delete().neq('id', 0)
+    if (delErr) return Response.json({ error: delErr.message }, { status: 500 })
 
-  if (e?.length) {
-    await supabase.from('portions').insert(
-      e.map(([ts, p, mg, cost]) => ({ ts, p, mg, cost }))
-    )
+    if (e && e.length > 0) {
+      const { error: insErr } = await supabase.from('portions').insert(
+        e.map(([ts, p, mg, cost]) => ({ ts, p, mg, cost }))
+      )
+      if (insErr) return Response.json({ error: insErr.message }, { status: 500 })
+    }
+
+    // Upsert all state values — explicit types to avoid jsonb mismatch
+    const { error: stErr } = await supabase.from('state').upsert([
+      { key: 'boxes',       value: Number(b)  },
+      { key: 'boxes_used',  value: Number(bu) },
+      { key: 'last_action', value: la ?? null },
+      { key: 'cfg',         value: cfg        }
+    ], { onConflict: 'key' })
+
+    if (stErr) return Response.json({ error: stErr.message }, { status: 500 })
+
+    return Response.json({ ok: true })
+  } catch (e) {
+    return Response.json({ error: e.message }, { status: 500 })
   }
-
-  return Response.json({ ok: true })
 }
