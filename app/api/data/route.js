@@ -25,12 +25,12 @@ export async function GET() {
       la: getState('last_action', null),
       cfg: getState('cfg', { mg: 10, p10: 269, ppb: 20 })
     })
-  } catch (e: any) {
+  } catch (e) {
     return Response.json({ error: e.message }, { status: 500 })
   }
 }
 
-export async function POST(request: Request) {
+export async function POST(request) {
   try {
     const { e, b, bu, la, cfg } = await request.json()
 
@@ -56,7 +56,7 @@ export async function POST(request: Request) {
     if (stErr) return Response.json({ error: stErr.message }, { status: 500 })
 
     return Response.json({ ok: true })
-  } catch (e: any) {
+  } catch (e) {
     return Response.json({ error: e.message }, { status: 500 })
   }
 }
