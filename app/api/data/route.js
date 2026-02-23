@@ -49,7 +49,7 @@ export async function POST(request) {
     const { error: stErr } = await supabase.from('state').upsert([
       { key: 'boxes',       value: Number(b)  },
       { key: 'boxes_used',  value: Number(bu) },
-      { key: 'last_action', value: la ?? null },
+      { key: 'last_action', value: la === null ? 0 : la },
       { key: 'cfg',         value: cfg        }
     ], { onConflict: 'key' })
 
