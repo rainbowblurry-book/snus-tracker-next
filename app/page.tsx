@@ -63,29 +63,95 @@ function lastTakenText(entries: Entry[]) {
   return `Last snus: ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
 }
 
-// ── MINI BAR CHART ────────────────────────────────────────
+// ── WEEK BAR CHART ────────────────────────────────────────
+// Always shows Sun→Sat of the current week
+// Active days show portion count above the bar
 function BarChart({ buckets }: { buckets: Record<string, number> }) {
+  // Build Sun→Sat of current week
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  const dayOfWeek = today.getDay(); // 0=Sun, 6=Sat
+
   const days = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(); d.setDate(d.getDate() - (6 - i));
-    return { key: d.toISOString().slice(0, 10), label: d.toLocaleDateString('en', { weekday: 'short' }) };
+    const d = new Date(today);
+    d.setDate(today.getDate() - dayOfWeek + i); // i=0 → Sunday
+    const key = d.toISOString().slice(0, 10);
+    const label = d.toLocaleDateString('en', { weekday: 'short' });
+    const isToday = key === todayStr;
+    const isFuture = d > today;
+    return { key, label, isToday, isFuture };
   });
+
   const vals = days.map(d => buckets[d.key] || 0);
   const max = Math.max(...vals, 1);
+
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, height: 80, padding: '0 4px' }}>
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 5, height: 100, padding: '0 2px' }}>
       {days.map((d, i) => {
-        const h = Math.max((vals[i] / max) * 72, vals[i] ? 4 : 2);
-        const isToday = d.key === todayK();
+        const val = vals[i];
+        const barH = Math.max((val / max) * 64, val > 0 ? 6 : 2);
+        const color = d.isToday
+          ? 'var(--good)'
+          : d.isFuture
+          ? 'var(--border)'
+          : val > 0
+          ? 'var(--ink)'
+          : 'var(--border)';
+        const opacity = d.isFuture ? 0.3 : d.isToday ? 1 : val > 0 ? 0.6 : 0.35;
+
         return (
-          <div key={d.key} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-            <div style={{ width: '100%', height: h, borderRadius: 4, background: isToday ? 'var(--good)' : vals[i] > 0 ? 'var(--ink)' : 'var(--border)', opacity: isToday ? 1 : 0.5, transition: 'height 0.4s ease' }} />
-            <span style={{ fontSize: 9, color: 'var(--dim)', fontWeight: isToday ? 700 : 400 }}>{d.label}</span>
+          <div
+            key={d.key}
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'flex-end',
+              gap: 4,
+              height: '100%',
+            }}
+          >
+            {/* Portion count — only show on active days */}
+            <div style={{
+              fontSize: 10,
+              fontWeight: 700,
+              color: d.isToday ? 'var(--good)' : 'var(--muted)',
+              height: 14,
+              lineHeight: '14px',
+              fontFamily: 'var(--body)',
+              visibility: val > 0 ? 'visible' : 'hidden',
+            }}>
+              {val}
+            </div>
+
+            {/* Bar */}
+            <div style={{
+              width: '100%',
+              height: barH,
+              borderRadius: 4,
+              background: color,
+              opacity,
+              transition: 'height 0.4s ease',
+            }} />
+
+            {/* Day label */}
+            <div style={{
+              fontSize: 9,
+              fontWeight: d.isToday ? 700 : 400,
+              color: d.isToday ? 'var(--ink)' : 'var(--dim)',
+              letterSpacing: '0.03em',
+              textTransform: 'uppercase',
+            }}>
+              {d.label}
+            </div>
           </div>
         );
       })}
     </div>
   );
 }
+
 
 // ── TOAST HOOK ────────────────────────────────────────────
 function useToast() {
